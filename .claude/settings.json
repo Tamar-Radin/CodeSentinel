@@ -1,0 +1,17 @@
+{
+  "hooks": {
+    "PreToolUse": [
+      {
+        "matcher": "Read|Edit|Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "node .claude/hooks/block-env-access.js",
+            "shell": "bash",
+            "statusMessage": "Checking for .env access..."
+          }
+        ]
+      }
+    ]
+  }
+}
