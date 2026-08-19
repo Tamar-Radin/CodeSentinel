@@ -3,6 +3,12 @@ name: Security Agent Scan
 on:
   pull_request:
 
+# Least-privilege (ASI02): read the checked-out code, write exactly one PR comment. No other
+# GitHub API access is needed by this workflow.
+permissions:
+  contents: read
+  pull-requests: write
+
 jobs:
   scan:
     runs-on: ubuntu-latest
@@ -16,9 +22,57 @@ jobs:
       - name: Install dependencies
         run: pip install -r requirements.txt
 
+      # NOTE: on a pull_request (not pull_request_target) trigger, GitHub does not expose repo
+      # secrets to workflow runs triggered by a fork PR — ANTHROPIC_API_KEY will be empty there,
+      # so layers 2-5 (the LLM-backed agents) fail soft and only the deterministic Semgrep/SCA
+      # findings come through. That's intentional: pull_request_target would run this fork's
+      # untrusted code with access to real repo secrets, which is a materially worse risk
+      # (ASI02) than a fork PR getting a partial scan. Do not switch triggers to "fix" this.
       - name: Run scan
         env:
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: python scan.py . --out findings.json
 
-      # TODO: parse findings.json and post as a PR comment via github-script / gh CLI
+      - name: Upload findings.json artifact
+        id: upload-findings
+        uses: actions/upload-artifact@v4
+        with:
+          name: security-agent-findings
+          path: findings.json
+
+      # actions/upload-artifact@v4 exposes a direct download link as the artifact-url output —
+      # pass it through so the comment can link to the full findings list instead of just
+      # naming the artifact and leaving the reader to find it under the run's Artifacts tab.
+      - name: Format PR comment
+        run: python ci/format_pr_comment.py findings.json pr_comment.md "${{ steps.upload-findings.outputs.artifact-url }}"
+
+      - name: Post or update PR comment
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const fs = require("fs");
+            const body = fs.readFileSync("pr_comment.md", "utf8");
+            const marker = "<!-- security-agent-scan -->";
+
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            });
+            const existing = comments.find((c) => c.body.includes(marker));
+
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              });
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              });
+            }

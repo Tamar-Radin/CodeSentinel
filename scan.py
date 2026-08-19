@@ -4,10 +4,13 @@ import argparse
 import json
 import sys
 
+from dotenv import load_dotenv
+
 from core.orchestrator import Orchestrator
 
 
 def main():
+    load_dotenv()
     parser = argparse.ArgumentParser(description="Security Agent — scan a repo for vulnerabilities")
     parser.add_argument("target", help="Path to the repository/directory to scan")
     parser.add_argument("--out", default="findings.json", help="Output JSON file for findings")

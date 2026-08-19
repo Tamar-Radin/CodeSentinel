@@ -5,4 +5,5 @@ __pycache__/
 findings/
 *.egg-info/
 .streamlit/
-test_targets/juice-shop/
+test_targets/juice-shop/*
+!test_targets/juice-shop/ground_truth.csv

@@ -1,6 +1,7 @@
-semgrep>=1.90.0
-anthropic>=0.40.0
-streamlit>=1.38.0
-pip-audit>=2.7.0
-networkx>=3.3
-pandas>=2.2.0
+semgrep==1.170.0
+anthropic==0.117.0
+python-dotenv==1.2.2
+streamlit==1.59.2
+pip-audit==2.10.1
+networkx==3.4.2
+pandas==2.3.3

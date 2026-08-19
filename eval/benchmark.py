@@ -23,19 +23,35 @@ def score(findings: list[dict], ground_truth: list[dict]) -> dict:
     pattern name use different vocabularies for the same vulnerability class, so owasp_id +
     location is the only field both sides agree on. File is compared by basename, not full
     path, since detectors normalize paths differently (relative-to-target vs. relative-to-cwd).
+
+    Also reports a `location_*` variant of every metric that drops the owasp_id requirement
+    (same file+line match only). The strict metrics conflate two distinct capabilities —
+    "found the vulnerability" and "labeled it with the exact right OWASP category" — and a
+    defensible-but-different categorization (e.g. an LLM tagging an SSRF finding A10:2025
+    instead of A01:2025) should not count as a total miss on the first capability. Use
+    `location_recall` to judge raw detection ability and `recall` to judge categorization
+    accuracy on top of that.
     """
     gt_rows = [_normalize_gt_row(row) for row in ground_truth]
     matched_gt_indices = set()
+    matched_gt_indices_location = set()
     true_positive_findings = 0
+    true_positive_findings_location = 0
 
     for finding in findings:
         matched_any = False
+        matched_any_location = False
         for gt_idx, gt_row in enumerate(gt_rows):
-            if _is_match(finding, gt_row):
+            if _is_match(finding, gt_row, require_owasp_match=True):
                 matched_any = True
                 matched_gt_indices.add(gt_idx)
+            if _is_match(finding, gt_row, require_owasp_match=False):
+                matched_any_location = True
+                matched_gt_indices_location.add(gt_idx)
         if matched_any:
             true_positive_findings += 1
+        if matched_any_location:
+            true_positive_findings_location += 1
 
     total_findings = len(findings)
     total_gt = len(gt_rows)
@@ -43,6 +59,13 @@ def score(findings: list[dict], ground_truth: list[dict]) -> dict:
     precision = true_positive_findings / total_findings if total_findings else 0.0
     recall = len(matched_gt_indices) / total_gt if total_gt else 0.0
     f1 = (2 * precision * recall / (precision + recall)) if (precision + recall) else 0.0
+
+    location_precision = true_positive_findings_location / total_findings if total_findings else 0.0
+    location_recall = len(matched_gt_indices_location) / total_gt if total_gt else 0.0
+    location_f1 = (
+        (2 * location_precision * location_recall / (location_precision + location_recall))
+        if (location_precision + location_recall) else 0.0
+    )
 
     return {
         "precision": precision,
@@ -52,17 +75,24 @@ def score(findings: list[dict], ground_truth: list[dict]) -> dict:
         "total_findings": total_findings,
         "matched_ground_truth": len(matched_gt_indices),
         "total_ground_truth": total_gt,
+        "location_precision": location_precision,
+        "location_recall": location_recall,
+        "location_f1": location_f1,
+        "true_positive_findings_location": true_positive_findings_location,
+        "matched_ground_truth_location": len(matched_gt_indices_location),
     }
 
 
 def _normalize_gt_row(row: dict) -> dict:
-    return {"file": row["file"], "line": int(row["line"]), "owasp_id": row["owasp_id"]}
+    return {"file": os.path.basename(row["file"]), "line": int(row["line"]), "owasp_id": row["owasp_id"]}
 
 
-def _is_match(finding: dict, gt_row: dict) -> bool:
+def _is_match(finding: dict, gt_row: dict, require_owasp_match: bool = True) -> bool:
     file = finding.get("file")
     line = finding.get("line")
-    if not file or finding.get("owasp_id") != gt_row["owasp_id"]:
+    if not file:
+        return False
+    if require_owasp_match and finding.get("owasp_id") != gt_row["owasp_id"]:
         return False
     if os.path.basename(file) != gt_row["file"]:
         return False
