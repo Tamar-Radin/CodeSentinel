@@ -5,7 +5,9 @@ Runs Semgrep+SCA alone vs. the full pipeline over a target and prints a precisio
 comparison table against a ground_truth.csv (see test_targets/*/ground_truth.csv for format).
 The full-pipeline result is further broken out by layer (Layer 1 Semgrep/SCA vs. Layer 3
 AI-Pattern-Agent) so layer-3 hallucination rate is visible on its own, not hidden inside the
-pooled aggregate (LLM09 — see security/llm_top10_notes.md).
+pooled aggregate (LLM09 — see security/llm_top10_notes.md). Layer-3 findings are confidence-scored
+too, via a second Confidence Agent pass in core/orchestrator.py, but this breakout groups by
+`tool` only and doesn't filter on that score.
 
 The full-pipeline row requires ANTHROPIC_API_KEY (layers 2-4 call the Anthropic API) and is
 skipped with a warning if it's not set, so the Semgrep-only baseline can still be measured.

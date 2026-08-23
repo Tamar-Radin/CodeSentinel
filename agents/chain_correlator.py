@@ -63,8 +63,9 @@ least 2 and at most 4 entries, and "target" must not appear in "findings".
 MAX_FINDINGS_FOR_CORRELATION = 40
 
 # ASI08 Cascading Failures — a low-confidence (likely hallucinated) finding must not seed a
-# false attack-chain narrative. Findings without a confidence score (e.g. layer-3 AI-pattern
-# findings, which aren't confidence-scored today) are not gated by this.
+# false attack-chain narrative. Layer-3 AI-pattern findings get their own Confidence Agent
+# pass in the orchestrator (see core/orchestrator.py), so they carry a real confidence score
+# and are gated by this threshold like any other finding.
 MIN_CONFIDENCE_FOR_CORRELATION = 0.5
 
 # LLM10:2025 Unbounded Consumption / hallucination guardrails for multi-finding chains: a chain
@@ -123,7 +124,17 @@ class ChainCorrelator:
         try:
             response = self.client.messages.create(
                 model=MODEL,
-                max_tokens=2048,
+                # claude-sonnet-5 runs extended thinking by default even when `thinking` is never
+                # set, and thinking tokens are drawn from the same max_tokens budget as the JSON
+                # response — with up to MAX_FINDINGS_FOR_CORRELATION findings to reason over, this
+                # was burning the entire budget on invisible thinking, leaving stop_reason
+                # "max_tokens" with no text block at all. Correlation is pattern linking, not deep
+                # reasoning, so disable it outright (same fix as ai_pattern_agent.py /
+                # patch_generator.py).
+                thinking={"type": "disabled"},
+                # Up to 40 candidate findings can yield many edges plus MAX_CHAINS combined
+                # chains; 2048 was tight even before thinking tokens competed for the same budget.
+                max_tokens=4096,
                 system=SYSTEM_PROMPT,
                 messages=[{"role": "user", "content": user_content}],
             )

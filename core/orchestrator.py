@@ -1,4 +1,4 @@
-"""Wires all pipeline layers together: Detection -> Confidence -> AI-Pattern -> Correlator -> Remediation."""
+"""Wires all pipeline layers together: Detection -> Confidence -> AI-Pattern -> Confidence -> Correlator -> Remediation."""
 from agents.ai_pattern_agent import AIPatternAgent
 from agents.chain_correlator import ChainCorrelator
 from agents.confidence_agent import ConfidenceAgent
@@ -18,13 +18,22 @@ class Orchestrator:
         findings += run_sca(self.target_path)
 
         # Layer 2: Confidence/Context Agent — annotates each finding with
-        # supporting/counter evidence and a confidence score
+        # supporting/counter evidence and a confidence score. This first pass only sees
+        # layer-1 findings; layer-3 findings don't exist yet at this point in the pipeline.
         findings = ConfidenceAgent().annotate(findings, self.target_path)
 
         # Layer 3: AI-Pattern Agent — scans whole files for patterns Semgrep can't
         # express (business logic, missing authz, fail-open handling), independent
-        # of the layer 1 findings above.
-        findings += AIPatternAgent().scan(self.target_path)
+        # of the layer 1 findings above. Stays a pure detection layer: no self-assessed
+        # confidence, no schema/prompt change.
+        ai_findings = AIPatternAgent().scan(self.target_path)
+
+        # Layer-3 findings get their own, separate Confidence Agent pass — same annotate()
+        # logic reused a second time against only the new findings — so they end up with the
+        # same evidence/confidence fields layer-1 findings already got above, without ever
+        # re-annotating layer-1 findings a second time.
+        ai_findings = ConfidenceAgent().annotate(ai_findings, self.target_path)
+        findings += ai_findings
 
         # Layer 4: Chain Correlator — links findings into "enables/amplifies" attack chains
         findings = ChainCorrelator().correlate(findings)

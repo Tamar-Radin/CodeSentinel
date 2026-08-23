@@ -1,0 +1,81 @@
+[
+  {
+    "file": "routes/admin.py",
+    "line": 12,
+    "check_id": "missing-auth-check",
+    "owasp_id": "A01",
+    "tool": "ai-pattern-agent",
+    "severity": "high",
+    "message": "Admin route has no authentication decorator.",
+    "confidence": 0.9,
+    "enables": [
+      {
+        "file": "models/user.py",
+        "line": 40,
+        "narrative": "Unauthenticated access to the admin route lets an attacker reach the mass-assignment endpoint below.",
+        "relationship": "sequential"
+      }
+    ],
+    "attack_chains": [
+      {
+        "findings": [
+          {"index": 0, "file": "routes/admin.py", "line": 12},
+          {"index": 1, "file": "models/user.py", "line": 40}
+        ],
+        "target": {"index": 2, "file": "core/session.py", "line": 8},
+        "relationship": "combined",
+        "narrative": "Missing auth plus mass assignment together let an unauthenticated attacker grant themselves the admin role, which session.py then trusts blindly for privilege checks."
+      }
+    ]
+  },
+  {
+    "file": "models/user.py",
+    "line": 40,
+    "check_id": "mass-assignment",
+    "owasp_id": "A04",
+    "tool": "ai-pattern-agent",
+    "severity": "medium",
+    "message": "User.update() accepts and applies the full request body, including 'role'.",
+    "confidence": 0.85,
+    "enabled_by": [
+      {
+        "file": "routes/admin.py",
+        "line": 12,
+        "narrative": "Unauthenticated access to the admin route lets an attacker reach the mass-assignment endpoint below.",
+        "relationship": "sequential"
+      }
+    ],
+    "attack_chains": [
+      {
+        "findings": [
+          {"index": 0, "file": "routes/admin.py", "line": 12},
+          {"index": 1, "file": "models/user.py", "line": 40}
+        ],
+        "target": {"index": 2, "file": "core/session.py", "line": 8},
+        "relationship": "combined",
+        "narrative": "Missing auth plus mass assignment together let an unauthenticated attacker grant themselves the admin role, which session.py then trusts blindly for privilege checks."
+      }
+    ]
+  },
+  {
+    "file": "core/session.py",
+    "line": 8,
+    "check_id": "trusts-role-from-session",
+    "owasp_id": "A01",
+    "tool": "ai-pattern-agent",
+    "severity": "critical",
+    "message": "Privilege checks read role directly from the session without re-validating against the DB.",
+    "confidence": 0.8,
+    "attack_chains": [
+      {
+        "findings": [
+          {"index": 0, "file": "routes/admin.py", "line": 12},
+          {"index": 1, "file": "models/user.py", "line": 40}
+        ],
+        "target": {"index": 2, "file": "core/session.py", "line": 8},
+        "relationship": "combined",
+        "narrative": "Missing auth plus mass assignment together let an unauthenticated attacker grant themselves the admin role, which session.py then trusts blindly for privilege checks."
+      }
+    ]
+  }
+]

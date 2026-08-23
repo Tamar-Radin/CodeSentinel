@@ -25,7 +25,11 @@ analyze the target repository. This means:
 
 - Source code from the scanned target repo — file contents around each finding
   (`±CONTEXT_LINES` in `confidence_agent.py`), and full file contents up to `MAX_FILE_BYTES` in
-  `ai_pattern_agent.py` — is sent to the Anthropic API as part of the prompt.
+  `ai_pattern_agent.py` — is sent to the Anthropic API as part of the prompt. The Confidence
+  Agent runs twice per scan (`core/orchestrator.py`): once annotating Layer 1 (semgrep/SCA)
+  findings, once annotating Layer 3 (AI-Pattern) findings — each pass bounded independently by
+  `MAX_FINDINGS_PER_RUN` — so this `±CONTEXT_LINES` source context can be sent to the API up to
+  twice per run, not once.
 - Chain Correlator (Layer 4) sends only structured finding summaries (file, line, check_id,
   message), never raw file content.
 - If the target repo contains secrets or credentials in source (e.g. hardcoded demo

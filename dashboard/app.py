@@ -7,7 +7,7 @@ import json
 
 import streamlit as st
 
-from dashboard.chains import combined_chains, pairwise_edges
+from chains import build_graph_dot, combined_chains, pairwise_edges
 
 st.set_page_config(page_title="Security Agent", layout="wide")
 st.title("Security Agent — Findings Dashboard")
@@ -18,6 +18,11 @@ if uploaded:
     findings = json.load(uploaded)
     st.write(f"{len(findings)} finding(s)")
     st.dataframe(findings)
+
+    graph_dot = build_graph_dot(findings)
+    if graph_dot:
+        st.subheader("Attack chain graph")
+        st.graphviz_chart(graph_dot)
 
     edges = pairwise_edges(findings)
     if edges:

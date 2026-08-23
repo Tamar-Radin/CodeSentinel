@@ -62,11 +62,17 @@ consumes and returns the same `list[dict]` findings shape, progressively enrichi
 2. **Layer 2 — Confidence/Context Agent** (`agents/confidence_agent.py`): calls the Anthropic API
    per finding with surrounding source (`±CONTEXT_LINES`) to add
    `{supporting_evidence, counter_evidence, confidence, confidence_reasoning, prompt_injection_detected}`.
-   Implemented and wired into the orchestrator today.
+   Implemented and wired into the orchestrator today. `Orchestrator.run()` runs this agent
+   **twice**: once after Layer 1 (annotating semgrep/SCA findings) and again, independently,
+   right after Layer 3 produces its findings (annotating those before Layer 4 sees them) — each
+   pass is its own call to `ConfidenceAgent().annotate()`, each bounded separately by
+   `MAX_FINDINGS_PER_RUN`, and layer-1 findings are never re-annotated by the second pass.
 3. **Layer 3 — AI-Pattern Agent** (`agents/ai_pattern_agent.py`): the project's core
    differentiator — scans for ~15 patterns specific to AI-generated code that structural tools
    miss (stubbed auth checks, hardcoded demo credentials, permissive CORS, fail-open error
-   handling, etc. — see `PATTERNS` list). Implemented and wired into the orchestrator.
+   handling, etc. — see `PATTERNS` list). Implemented and wired into the orchestrator. Stays a
+   pure detection layer with no self-assessed confidence — its findings get confidence-scored by
+   a second Layer 2 pass immediately afterward (see above), not by anything in this agent itself.
 4. **Layer 4 — Chain Correlator** (`agents/chain_correlator.py`): builds a `networkx.DiGraph` of
    findings and makes a single bounded LLM call (`MAX_FINDINGS_FOR_CORRELATION`, not one call per
    pair) that returns "enables/amplifies" edges to narrate attack chains (e.g. "IDOR + mass
