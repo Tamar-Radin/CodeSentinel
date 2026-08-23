@@ -81,7 +81,39 @@ def format_comment(findings: list[dict], artifact_url: str | None = None) -> str
                 "for the full list."
             )
 
+    chains = _combined_chains(findings)
+    if chains:
+        lines.append("")
+        lines.append("**Attack chains (multi-finding)** — findings that only matter combined:")
+        for chain in chains:
+            contributors = ", ".join(f"`{ref.get('file')}:{ref.get('line')}`" for ref in chain["findings"])
+            target = f"`{chain['target'].get('file')}:{chain['target'].get('line')}`"
+            narrative = " ".join(str(chain["narrative"]).split()).replace("|", "\\|")
+            lines.append(f"- {contributors} → {target}: {narrative}")
+
     return "\n".join(lines) + "\n"
+
+
+def _combined_chains(findings: list[dict]) -> list[dict]:
+    """Combined (multi-finding) chains are attached to every finding they involve (see
+    agents/chain_correlator.py::_attach_chains) — dedup here by the set of finding indices +
+    target index + narrative so each chain is only listed once."""
+    seen = set()
+    chains = []
+    for f in findings:
+        for chain in f.get("attack_chains", []):
+            if chain.get("relationship") != "combined":
+                continue
+            key = (
+                tuple(sorted(ref["index"] for ref in chain["findings"])),
+                chain["target"]["index"],
+                chain["narrative"],
+            )
+            if key in seen:
+                continue
+            seen.add(key)
+            chains.append(chain)
+    return chains
 
 
 def _severity_key(finding: dict) -> str:

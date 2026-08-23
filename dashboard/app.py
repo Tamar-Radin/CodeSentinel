@@ -7,6 +7,8 @@ import json
 
 import streamlit as st
 
+from dashboard.chains import combined_chains, pairwise_edges
+
 st.set_page_config(page_title="Security Agent", layout="wide")
 st.title("Security Agent — Findings Dashboard")
 
@@ -16,5 +18,15 @@ if uploaded:
     findings = json.load(uploaded)
     st.write(f"{len(findings)} finding(s)")
     st.dataframe(findings)
+
+    edges = pairwise_edges(findings)
+    if edges:
+        st.subheader("Attack chains — sequential / amplifying")
+        st.dataframe(edges)
+
+    chains = combined_chains(findings)
+    if chains:
+        st.subheader("Attack chains — combined (multi-finding)")
+        st.dataframe(chains)
 else:
     st.info("Run `python scan.py <target> --out findings.json` and upload the result here.")

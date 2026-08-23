@@ -10,6 +10,27 @@ permissions:
   pull-requests: write
 
 jobs:
+  unit-tests:
+    runs-on: ubuntu-latest
+    # No ANTHROPIC_API_KEY or scanned-repo access needed: agents/*.py and remediation/*.py are
+    # unit-tested with a fake Anthropic client (see tests/conftest.py), so this runs the same on
+    # every PR, forks included. Narrower than the workflow-level `permissions:` above since this
+    # job doesn't post anything.
+    permissions:
+      contents: read
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt -r requirements-dev.txt
+
+      - name: Run unit tests
+        run: pytest -q
+
   scan:
     runs-on: ubuntu-latest
     steps:

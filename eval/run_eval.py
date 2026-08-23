@@ -22,7 +22,7 @@ from eval.benchmark import load_ground_truth, score
 
 # tool -> layer grouping for the per-layer breakdown. See detectors/semgrep_runner.py,
 # detectors/sca_runner.py, and agents/ai_pattern_agent.py for where each `tool` value is set.
-LAYER1_TOOLS = {"semgrep", "pip-audit", "npm-audit"}
+LAYER1_TOOLS = {"semgrep", "pip-audit", "npm-audit", "osv-scanner"}
 
 
 def main():

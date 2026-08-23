@@ -92,6 +92,19 @@ MAX_FILE_BYTES = 50_000
 SCAN_EXTENSIONS = {".py", ".js", ".ts", ".jsx", ".tsx", ".java", ".go", ".rb", ".php"}
 SKIP_DIR_NAMES = {".git", "node_modules", "venv", ".venv", "__pycache__", "dist", "build"}
 
+# Directory names conventionally holding server-side code, scanned ahead of everything else so
+# the MAX_FILES_PER_SCAN budget can't be exhausted by a large frontend/fixtures tree before
+# reaching the files most likely to hold auth/IDOR/SSRF/injection bugs (see diagnosis: on
+# Juice Shop, data/ + frontend/ alone filled the old unsorted 200-file walk before routes/ or
+# lib/ were ever reached, so Layer 3 never saw them).
+PRIORITY_DIR_NAMES = {
+    "routes", "route", "lib", "models", "model", "middleware", "controllers", "controller",
+    "api", "server", "backend", "handlers", "services",
+}
+# Extensions that are essentially never frontend code, so any file in these languages is
+# treated as backend-priority regardless of directory name.
+BACKEND_ONLY_EXTENSIONS = {".py", ".go", ".rb", ".php", ".java"}
+
 REQUIRED_FINDING_KEYS = {"file", "line", "pattern", "owasp_id", "severity", "reasoning"}
 
 # Matches the schema mandated in SYSTEM_PROMPT: A01:2025-A10:2025, or ASI01 for the
@@ -182,9 +195,18 @@ def _walk_files(target_path: str) -> list[str]:
         for name in files:
             if os.path.splitext(name)[1] in SCAN_EXTENSIONS:
                 matched.append(os.path.relpath(os.path.join(root, name), target_path))
-                if len(matched) >= MAX_FILES_PER_SCAN:
-                    return matched
-    return matched
+    # Stable sort: backend-priority files first (original walk order preserved within each
+    # group), then the budget is applied — so the cap always favors server-side code over
+    # frontend/fixture trees instead of whichever the OS happens to list first.
+    matched.sort(key=lambda rel_path: 0 if _is_backend_priority(rel_path) else 1)
+    return matched[:MAX_FILES_PER_SCAN]
+
+
+def _is_backend_priority(rel_path: str) -> bool:
+    if os.path.splitext(rel_path)[1] in BACKEND_ONLY_EXTENSIONS:
+        return True
+    parts = {p.lower() for p in rel_path.split(os.sep)}
+    return bool(parts & PRIORITY_DIR_NAMES)
 
 
 def _parse_response(text: str) -> list[dict]:

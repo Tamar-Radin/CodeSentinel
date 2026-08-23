@@ -19,19 +19,32 @@ pip install -r requirements.lock.txt   # full transitive lock — use for CI/rep
 
 python scan.py <path-to-target-repo> [--out findings.json]   # run the full pipeline
 streamlit run dashboard/app.py                                # view a findings.json in the UI
+
+pip install -r requirements-dev.txt    # test-only deps (pytest)
+pytest                                  # unit test suite (tests/) — no API key, no binaries needed
 ```
 
 `requirements.lock.txt` is a plain `pip freeze` of `requirements.txt`'s full dependency tree
 (regenerate with `pip install -r requirements.txt && pip freeze > requirements.lock.txt`), with
 `pywin32` stripped back out — it's pulled in by semgrep/mcp only under `sys_platform == "win32"`,
 and `pip freeze` drops that marker, so leaving it in would break installs on the `ubuntu-latest`
-CI runner.
+CI runner. `requirements-dev.txt` (pytest) is separate and deliberately not folded into either
+file — it's not part of the shipped pipeline.
 
-There is no unit/integration test suite yet. `eval/benchmark.py` (precision/recall/F1 via
-`score()`) and the `eval/run_eval.py` CLI (`python -m eval.run_eval <target_path>`, compares
-Semgrep+SCA-only vs. the full pipeline) are implemented, but currently only
-`test_targets/ai-generated-crud-app/ground_truth.csv` exists — `juice-shop/` has no ground truth
-yet, so eval only runs against one target.
+`tests/` holds the unit suite (run via `pytest`, wired into `ci/github-action.yml` as its own
+`unit-tests` job on every PR, forks included — it needs neither `ANTHROPIC_API_KEY` nor Semgrep/
+pip-audit/npm/osv-scanner installed). Every LLM-backed class (`ConfidenceAgent`, `AIPatternAgent`,
+`ChainCorrelator`, `PatchGenerator`) takes an injectable `client: anthropic.Anthropic | None`
+for exactly this reason — tests pass a fake client (`tests/conftest.py::FakeAnthropicClient`)
+instead of hitting the real API. Coverage is unit-level only (pure logic, schema validation,
+fail-soft/bound behavior, fake-client agent behavior) — there's no integration test that runs the
+real pipeline end-to-end against a live target; `eval/run_eval.py` (below) is the closest thing to
+that today, and still requires a real `ANTHROPIC_API_KEY` for its full-pipeline row.
+
+`eval/benchmark.py` (precision/recall/F1 via `score()`) and the `eval/run_eval.py` CLI
+(`python -m eval.run_eval <target_path>`, compares Semgrep+SCA-only vs. the full pipeline) are
+implemented, and both `test_targets/ai-generated-crud-app/ground_truth.csv` and
+`test_targets/juice-shop/ground_truth.csv` exist, so eval can run against either target.
 
 ## Architecture: the 5-layer pipeline
 
@@ -40,8 +53,10 @@ consumes and returns the same `list[dict]` findings shape, progressively enrichi
 
 1. **Layer 1 — deterministic detection** (`detectors/`): `semgrep_runner.run_semgrep()` (Semgrep
    with `p/owasp-top-ten`, `p/security-audit`, `p/secrets` rulesets) and `sca_runner.run_sca()`
-   (`pip-audit` for Python, `npm audit` for JS/TS — `osv-scanner` as a broader-ecosystem backstop
-   is still a TODO). Both normalize output to
+   (`pip-audit` for Python, `npm audit` for JS/TS, `osv-scanner` as a broader-ecosystem backstop
+   for Go/Ruby/PHP/etc. — skipped locally if the `osv-scanner` binary isn't on PATH, and not yet
+   installed by `ci/github-action.yml`'s `ubuntu-latest` runner, so it fails soft to no findings
+   there today). Both normalize output to
    `{file, line, check_id, owasp_id, tool, severity, message}` and fail soft (return `[]`) if the
    underlying binary is missing or errors, so the pipeline always runs end-to-end.
 2. **Layer 2 — Confidence/Context Agent** (`agents/confidence_agent.py`): calls the Anthropic API
@@ -130,19 +145,33 @@ Concrete rules that follow from these and apply to any code touching the agent l
 ## Known gaps (see TODOs in code before assuming something works)
 
 - All 5 pipeline layers are implemented and wired into `Orchestrator.run()`.
-- `sca_runner.py` covers Python (`pip-audit`) and JS/TS (`npm audit`); other ecosystems
-  (Go/Ruby/PHP/etc.) have no SCA coverage yet — `osv-scanner` would be the natural way to widen
-  this without adding a per-ecosystem tool.
+- `sca_runner.py` covers Python (`pip-audit`), JS/TS (`npm audit`), and now Go/Ruby/PHP/etc. via
+  `osv-scanner` (results are filtered to skip the PyPI/npm ecosystems so findings aren't
+  double-reported alongside pip-audit/npm-audit). The binary isn't installed on the
+  `ci/github-action.yml` runner yet, so this layer only runs where `osv-scanner` is on PATH —
+  wiring an install step into CI is the remaining piece.
 - `requirements.txt` direct deps are now pinned to exact versions, and `requirements.lock.txt`
   pins the full transitive tree (LLM03). CI (`ci/github-action.yml`) still installs from
   `requirements.txt`, not the lock file, so it stays cross-platform.
-- `test_targets/juice-shop/` has no `ground_truth.csv`, so `eval/run_eval.py` can currently only
-  score against `ai-generated-crud-app/`.
 - README now discloses that scanned source is sent to the Anthropic API (LLM02) — see the "Data
   sent to the Anthropic API" section.
+- `tests/` now covers pure logic, schema validation, and fail-soft/bound behavior across every
+  layer with unit tests (fake Anthropic client, no live binaries) — see the `pytest` section
+  above. It does not cover the real pipeline end-to-end against a live target; that gap is
+  `eval/run_eval.py`'s full-pipeline row (needs a real `ANTHROPIC_API_KEY`), not a `pytest` test.
+- `_is_backend_priority()` in `agents/ai_pattern_agent.py` has a known imprecision (documented
+  and locked in by
+  `tests/test_ai_pattern_agent.py::test_is_backend_priority_true_for_frontend_services_dir_known_limitation`):
+  `PRIORITY_DIR_NAMES` includes `"services"`, which also matches Angular's conventional frontend
+  `Services/` folder (e.g. `frontend/src/app/Services/*.service.ts`), so those frontend files get
+  priority-boosted under the `MAX_FILES_PER_SCAN` budget alongside real backend code. Only skews
+  ordering, not what ultimately gets flagged — worth tightening (e.g. requiring the priority dir
+  name to appear alongside a backend-only extension, or excluding paths already under a
+  `frontend`/`client`-named directory) but not yet done.
 
 ## Test targets
 
 `test_targets/` holds fixture repos for evaluation: `ai-generated-crud-app/` (self-built, has
 `ground_truth.csv`, includes the prompt-injection ground-truth case above) and `juice-shop/`
-(vendored OWASP Juice Shop — excluded from git via `.gitignore`, no `ground_truth.csv` yet).
+(vendored OWASP Juice Shop — excluded from git via `.gitignore`, but `ground_truth.csv` for it is
+tracked and present, so `eval/run_eval.py` can score against either target).

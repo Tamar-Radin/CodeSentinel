@@ -1,13 +1,19 @@
 """Layer 1 — Software Composition Analysis (A03:2025 Software Supply Chain Failures)."""
 import json
+import os
 import shutil
 import subprocess
+
+# Ecosystems already covered by the dedicated tools below — excluded from the osv-scanner
+# results so the same PyPI/npm dependency isn't reported twice under two different tool names.
+_OSV_SKIP_ECOSYSTEMS = {"PyPI", "npm"}
 
 
 def run_sca(target_path: str) -> list[dict]:
     findings = []
     findings += _run_pip_audit(target_path)
     findings += _run_npm_audit(target_path)
+    findings += _run_osv_scanner(target_path)
     return findings
 
 
@@ -80,4 +86,48 @@ def _run_npm_audit(target_path: str) -> list[dict]:
             "severity": vuln.get("severity", "unknown"),
             "message": f"{pkg_name}: {titles}",
         })
+    return findings
+
+
+def _run_osv_scanner(target_path: str) -> list[dict]:
+    # osv-scanner is a standalone Go binary (not a pip package, same category as npm above) —
+    # resolve it via PATH rather than listing it in requirements.txt.
+    osv_scanner = shutil.which("osv-scanner")
+    if osv_scanner is None:
+        return []
+    try:
+        result = subprocess.run(
+            [osv_scanner, "scan", "source", "--format", "json", "-r", target_path],
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            timeout=180,
+        )
+        raw = json.loads(result.stdout or "{}")
+    except (FileNotFoundError, subprocess.TimeoutExpired, json.JSONDecodeError):
+        # Not installed / scan failed — fail soft, same policy as every other detector here.
+        return []
+
+    findings = []
+    for source_result in raw.get("results", []):
+        source_path = source_result.get("source", {}).get("path", "")
+        rel_path = os.path.relpath(source_path, target_path) if source_path else "unknown"
+        for pkg in source_result.get("packages", []):
+            package = pkg.get("package", {})
+            ecosystem = package.get("ecosystem", "")
+            if ecosystem in _OSV_SKIP_ECOSYSTEMS:
+                continue
+            for vuln in pkg.get("vulnerabilities", []):
+                findings.append({
+                    "file": rel_path,
+                    "line": None,
+                    "check_id": vuln.get("id"),
+                    "owasp_id": "A03:2025",
+                    "tool": "osv-scanner",
+                    "severity": vuln.get("database_specific", {}).get("severity", "unknown"),
+                    "message": (
+                        f"{package.get('name')}=={package.get('version')} ({ecosystem}): "
+                        f"{vuln.get('summary') or vuln.get('id')}"
+                    ),
+                })
     return findings
