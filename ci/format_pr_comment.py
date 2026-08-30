@@ -35,6 +35,11 @@ _SEMGREP_SEVERITY_MAP = {"error": "high", "warning": "medium", "info": "low"}
 # the uploaded findings.json artifact for the rest rather than dumping everything inline.
 MAX_ROWS_IN_COMMENT = 20
 
+# Diffs are the most char-expensive thing in the comment (Layer 5) — cap how many are inlined,
+# separately from MAX_ROWS_IN_COMMENT, so a run with many patchable findings can't blow the
+# comment size budget on its own.
+MAX_PATCHES_IN_COMMENT = 5
+
 
 def format_comment(findings: list[dict], artifact_url: str | None = None) -> str:
     if not findings:
@@ -90,6 +95,29 @@ def format_comment(findings: list[dict], artifact_url: str | None = None) -> str
             target = f"`{chain['target'].get('file')}:{chain['target'].get('line')}`"
             narrative = " ".join(str(chain["narrative"]).split()).replace("|", "\\|")
             lines.append(f"- {contributors} → {target}: {narrative}")
+
+    patched = [f for f in findings if f.get("proposed_patch", {}).get("patchable")]
+    if patched:
+        lines.append("")
+        lines.append(
+            "**Proposed patches (Layer 5)** — for human review only, never auto-applied:"
+        )
+        for f in patched[:MAX_PATCHES_IN_COMMENT]:
+            patch = f["proposed_patch"]
+            location = f"`{f.get('file') or '?'}:{f.get('line') or '?'}`"
+            explanation = " ".join(str(patch.get("explanation") or "").split())
+            lines.append("")
+            lines.append(f"<details><summary>{location} — {explanation}</summary>")
+            lines.append("")
+            lines.append("```diff")
+            lines.append(str(patch.get("diff") or ""))
+            lines.append("```")
+            lines.append("</details>")
+        if len(patched) > MAX_PATCHES_IN_COMMENT:
+            lines.append("")
+            lines.append(
+                f"...and {len(patched) - MAX_PATCHES_IN_COMMENT} more proposed patch(es) in the findings artifact."
+            )
 
     return "\n".join(lines) + "\n"
 

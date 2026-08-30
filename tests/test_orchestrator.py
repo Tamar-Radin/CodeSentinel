@@ -99,3 +99,66 @@ def test_ai_pattern_findings_get_annotated_with_confidence_fields(monkeypatch, t
     for key in ("confidence", "confidence_reasoning", "supporting_evidence", "counter_evidence"):
         assert key in ai_finding
     assert ai_finding["confidence"] == 0.7
+
+
+def _stub_layers_1_through_5(monkeypatch):
+    monkeypatch.setattr(orchestrator, "run_semgrep", lambda path: [])
+    monkeypatch.setattr(orchestrator, "run_sca", lambda path: [])
+
+    class PassthroughConfidenceAgent:
+        def annotate(self, findings, target_path):
+            return findings
+
+    class EmptyAIPatternAgent:
+        def scan(self, target_path):
+            return []
+
+    class PassthroughChainCorrelator:
+        def correlate(self, findings):
+            return findings
+
+    class PassthroughPatchGenerator:
+        def generate_all(self, findings, target_path):
+            return findings
+
+    monkeypatch.setattr(orchestrator, "ConfidenceAgent", PassthroughConfidenceAgent)
+    monkeypatch.setattr(orchestrator, "AIPatternAgent", EmptyAIPatternAgent)
+    monkeypatch.setattr(orchestrator, "ChainCorrelator", PassthroughChainCorrelator)
+    monkeypatch.setattr(orchestrator, "PatchGenerator", PassthroughPatchGenerator)
+
+
+def test_run_never_calls_runtime_verifier_by_default(monkeypatch):
+    # Layer 6 is additive/opt-in only — the static scan must behave exactly as it did before
+    # RuntimeVerifier existed unless verify_runtime=True is explicitly passed.
+    _stub_layers_1_through_5(monkeypatch)
+    calls = []
+
+    class ExplodingRuntimeVerifier:
+        def verify_all(self, findings, target_path):
+            calls.append("called")
+            raise AssertionError("must not be called when verify_runtime is not set")
+
+    monkeypatch.setattr(orchestrator, "RuntimeVerifier", ExplodingRuntimeVerifier)
+
+    findings = Orchestrator("/target").run()
+
+    assert calls == []
+    assert findings == []
+
+
+def test_run_calls_runtime_verifier_only_when_opted_in(monkeypatch):
+    _stub_layers_1_through_5(monkeypatch)
+    calls = []
+
+    class FakeRuntimeVerifier:
+        def verify_all(self, findings, target_path):
+            calls.append(target_path)
+            return [{**f, "runtime_verification": {"status": "confirmed"}} for f in findings]
+
+    monkeypatch.setattr(orchestrator, "RuntimeVerifier", lambda: FakeRuntimeVerifier())
+    monkeypatch.setattr(orchestrator, "run_semgrep", lambda path: [{"tool": "semgrep", "message": "m"}])
+
+    findings = Orchestrator("/target", verify_runtime=True).run()
+
+    assert calls == ["/target"]
+    assert findings[0]["runtime_verification"]["status"] == "confirmed"

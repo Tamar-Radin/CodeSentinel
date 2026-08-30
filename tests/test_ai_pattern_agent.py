@@ -149,6 +149,37 @@ def test_scan_file_returns_error_finding_when_model_call_fails(tmp_path, fake_cl
     assert "boom" in results[0]["reasoning"]
 
 
+def test_scan_file_retries_once_and_recovers_from_malformed_json(tmp_path, fake_client):
+    """A single malformed-JSON response must not zero out a whole file's findings — the model's
+    output is non-deterministic, so a retry that returns valid JSON should be used instead of
+    falling back to an error finding."""
+    (tmp_path / "app.py").write_text("1: x = 1\n")
+    malformed = '[{"file": "app.py", "line": "5",'  # truncated / invalid JSON
+    valid = json.dumps([_valid_item()])
+    client = fake_client(responses=[malformed, valid])
+    agent = AIPatternAgent(client=client)
+
+    results = agent._scan_file(str(tmp_path), "app.py")
+
+    assert len(client.calls) == 2
+    assert len(results) == 1
+    assert results[0]["pattern"] == "string_built_sql"
+
+
+def test_scan_file_returns_error_finding_when_retry_also_malformed(tmp_path, fake_client):
+    (tmp_path / "app.py").write_text("1: x = 1\n")
+    malformed = '[{"file": "app.py", "line": "5",'
+    client = fake_client(responses=[malformed, malformed])
+    agent = AIPatternAgent(client=client)
+
+    results = agent._scan_file(str(tmp_path), "app.py")
+
+    assert len(client.calls) == 2
+    assert len(results) == 1
+    assert results[0]["tool"] == "ai-pattern-agent"
+    assert results[0]["pattern"] is None
+
+
 def test_scan_file_keeps_both_real_vuln_and_injection_finding_on_same_line(tmp_path, fake_client):
     """Regression guard for the CLAUDE.md invariant: a real vulnerability and a
     prompt-injection-attempt finding on the same line must both survive parsing — an injection

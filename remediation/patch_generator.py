@@ -39,12 +39,17 @@ must say why a patch can't be safely generated from the given context.
 # regardless of how many findings reach this layer. See security/llm_top10_notes.md.
 MAX_PATCHES_PER_RUN = 20
 
-# Only propose patches for findings the pipeline is already confident about — an unverified,
-# low-confidence finding must not turn into a plausible-looking but wrong diff (ASI05/ASI08).
-# Findings without a confidence score at all (e.g. layer-3 AI-pattern findings, which aren't
-# confidence-scored today) are not gated by this, matching MIN_CONFIDENCE_FOR_CORRELATION's
-# policy in chain_correlator.py.
-MIN_CONFIDENCE_FOR_PATCH = 0.7
+# Hard floor: a finding below this confidence is never proposed a patch, regardless of how many
+# MAX_PATCHES_PER_RUN slots are still open — an unverified, low-confidence finding must not turn
+# into a plausible-looking but wrong diff (ASI05/ASI08). Every finding that reaches this layer has
+# already been through a Confidence Agent pass — layer-1 findings directly, layer-3 findings via
+# their own separate pass (see core/orchestrator.py) — so a finding with no confidence score at
+# all here means that pass errored or was skipped past its own MAX_FINDINGS_PER_RUN bound, not an
+# expected case; it's excluded rather than given a free pass. Candidates are then picked in
+# confidence-descending order (see generate_all), so in practice the highest-confidence findings
+# fill the per-run budget first and this floor is only reached if fewer than MAX_PATCHES_PER_RUN
+# findings clear a higher bar (e.g. 0.7).
+MIN_CONFIDENCE_FOR_PATCH = 0.5
 
 # How many lines of surrounding source to show the model on each side of the finding.
 CONTEXT_LINES = 15
@@ -69,10 +74,14 @@ class PatchGenerator:
         self.client = client or anthropic.Anthropic()
 
     def generate_all(self, findings: list[dict], target_path: str) -> list[dict]:
-        """Attach a `proposed_patch` to up to MAX_PATCHES_PER_RUN eligible findings.
-        Additive enrichment, like chain_correlator.correlate — findings that aren't
-        eligible, or that come after the per-run cap, pass through unchanged."""
+        """Attach a `proposed_patch` to up to MAX_PATCHES_PER_RUN eligible findings, picked in
+        confidence-descending order — never an arbitrary/appearance order — so the
+        highest-confidence candidates fill the per-run budget first and lower-confidence ones
+        (down to MIN_CONFIDENCE_FOR_PATCH) only get a slot if room is left over. Additive
+        enrichment, like chain_correlator.correlate — findings that aren't eligible, or that
+        don't make the cut, pass through unchanged."""
         candidate_indices = [i for i, f in enumerate(findings) if _is_candidate(f)]
+        candidate_indices.sort(key=lambda i: findings[i]["confidence"], reverse=True)
         candidate_indices = candidate_indices[:MAX_PATCHES_PER_RUN]
 
         enriched = list(findings)
@@ -116,7 +125,7 @@ class PatchGenerator:
 
 def _is_candidate(finding: dict) -> bool:
     confidence = finding.get("confidence")
-    if confidence is not None and confidence < MIN_CONFIDENCE_FOR_PATCH:
+    if confidence is None or confidence < MIN_CONFIDENCE_FOR_PATCH:
         return False
     return _match_pattern(finding) is not None
 

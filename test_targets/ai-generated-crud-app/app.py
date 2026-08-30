@@ -152,4 +152,10 @@ def handle_error(e):
 
 if __name__ == "__main__":
     init_db()
-    app.run(debug=True, host="0.0.0.0")  # debug mode + bind-all in a shipped app
+    # RV_* env vars let the runtime-verification sandbox (verification/adapters/
+    # flask_crud_adapter.py) bind to a private localhost port instead — unset, behavior is
+    # unchanged from before: debug mode + bind-all in a shipped app.
+    host = os.environ.get("RV_HOST", "0.0.0.0")
+    port = int(os.environ.get("RV_PORT", "5000"))
+    debug = os.environ.get("RV_DEBUG", "1") != "0"
+    app.run(debug=debug, host=host, port=port)

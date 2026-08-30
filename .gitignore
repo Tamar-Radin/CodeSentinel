@@ -1,9 +1,12 @@
 venv/
+.venv/
 __pycache__/
 *.pyc
 .env
 findings/
 *.egg-info/
+build/
+dist/
 .streamlit/
 test_targets/juice-shop/*
 !test_targets/juice-shop/ground_truth.csv

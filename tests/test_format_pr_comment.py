@@ -53,3 +53,53 @@ def test_format_comment_escapes_pipe_in_chain_narrative():
     comment = format_comment(findings)
 
     assert "a \\| b enable c" in comment
+
+
+def test_format_comment_has_no_patches_section_without_patches():
+    comment = format_comment([_finding("a.py", 1)])
+    assert "Proposed patches" not in comment
+
+
+def test_format_comment_omits_non_patchable_findings_from_patches_section():
+    finding = _finding(
+        "a.py", 1,
+        proposed_patch={"patchable": False, "diff": None, "explanation": "can't fix"},
+    )
+
+    comment = format_comment([finding])
+
+    assert "Proposed patches" not in comment
+
+
+def test_format_comment_lists_proposed_patch_diff():
+    finding = _finding(
+        "a.py", 1,
+        proposed_patch={
+            "patchable": True,
+            "diff": "--- a/a.py\n+++ b/a.py\n@@ -1 +1 @@\n-old\n+new\n",
+            "explanation": "fix it",
+        },
+    )
+
+    comment = format_comment([finding])
+
+    assert "Proposed patches" in comment
+    assert "`a.py:1` — fix it" in comment
+    assert "```diff" in comment
+    assert "-old" in comment
+    assert "+new" in comment
+
+
+def test_format_comment_caps_inlined_patches():
+    findings = [
+        _finding(
+            f"f{i}.py", i,
+            proposed_patch={"patchable": True, "diff": f"diff-{i}", "explanation": f"fix-{i}"},
+        )
+        for i in range(7)
+    ]
+
+    comment = format_comment(findings)
+
+    assert comment.count("<details>") == 5
+    assert "and 2 more proposed patch(es)" in comment

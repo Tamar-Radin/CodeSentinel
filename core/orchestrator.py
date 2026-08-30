@@ -6,11 +6,16 @@ from core.secret_masking import mask_finding_secrets
 from detectors.semgrep_runner import run_semgrep
 from detectors.sca_runner import run_sca
 from remediation.patch_generator import PatchGenerator
+from verification.runtime_verifier import RuntimeVerifier
 
 
 class Orchestrator:
-    def __init__(self, target_path: str):
+    def __init__(self, target_path: str, verify_runtime: bool = False):
         self.target_path = target_path
+        # Opt-in only (default False): Layer 6 actually executes the scanned target inside a
+        # process-isolated sandbox (see verification/sandbox.py) — never turned on implicitly.
+        # See security/agent_hardening_notes.md (ASI05) for what this executes and how.
+        self.verify_runtime = verify_runtime
 
     def run(self) -> list[dict]:
         # Layer 1: deterministic detection
@@ -42,6 +47,14 @@ class Orchestrator:
         # high-confidence, pattern-supported findings. Never applied automatically (ASI05);
         # `proposed_patch` is for human review only.
         findings = PatchGenerator().generate_all(findings, self.target_path)
+
+        # Layer 6 (opt-in, stretch): Runtime Exploit Verification — actually runs the scanned
+        # target in a process-isolated sandbox and attempts to reproduce a finding's
+        # vulnerability. Additive only: skipped entirely unless verify_runtime=True, and only
+        # ever adds a runtime_verification key to findings that entered its eligibility funnel.
+        # See verification/runtime_verifier.py and security/agent_hardening_notes.md (ASI05).
+        if self.verify_runtime:
+            findings = RuntimeVerifier().verify_all(findings, self.target_path)
 
         # LLM02:2025 Sensitive Information Disclosure — scrub secret-looking values out of
         # every free-text field (including nested proposed_patch/enables structures) on every

@@ -16,6 +16,33 @@ pip install -r requirements.lock.txt   # or requirements.txt for direct deps onl
 python scan.py <path-to-target-repo>
 ```
 
+## Installing as a CLI (recommended for scanning your own repo)
+
+This repo stays private — no PyPI publish, no public git URL. Distribute it as a wheel file
+instead, built once from a checkout and then shared privately (internal file share, artifact
+registry, or handed directly to whoever needs it):
+
+```bash
+pip install build
+python -m build --wheel            # produces dist/security_agent-0.1.0-py3-none-any.whl
+```
+
+Whoever wants to scan their own repo installs the wheel file directly — no git access needed at all:
+
+```bash
+pip install security_agent-0.1.0-py3-none-any.whl
+
+export ANTHROPIC_API_KEY=sk-ant-...    # your own key — see below
+security-agent scan <path-to-your-repo> --out findings.json
+security-agent dashboard findings.json  # opens the Streamlit viewer with findings preloaded
+```
+
+(For local development on this repo itself, `pip install .` from a checkout works the same way.)
+
+`semgrep` and `pip-audit` are pulled in automatically as pip dependencies. JS/TS SCA (`npm audit`)
+and the Go/Ruby/PHP backstop (`osv-scanner`) are best-effort: if `npm`/`osv-scanner` aren't on
+your PATH, that part of Layer 1 is skipped rather than failing the scan.
+
 ## Data sent to the Anthropic API
 
 Layers 2-4 (`agents/confidence_agent.py`, `agents/ai_pattern_agent.py`,

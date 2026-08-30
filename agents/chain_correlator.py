@@ -14,6 +14,7 @@ never raw scanned-file content — so this layer does not reopen the prompt-inje
 (ASI01) that confidence_agent.py / ai_pattern_agent.py already guard against.
 """
 import json
+import sys
 
 import anthropic
 import networkx as nx
@@ -140,9 +141,13 @@ class ChainCorrelator:
             )
             text = next(b.text for b in response.content if b.type == "text")
             return _parse_response(text)
-        except Exception:
+        except Exception as e:
             # Correlation is additive enrichment — a failed/malformed model call should not
-            # break the pipeline; findings still flow through uncorrelated.
+            # break the pipeline; findings still flow through uncorrelated. But swallowing this
+            # with no trace at all made a real failure (see git history: thinking tokens eating
+            # the whole max_tokens budget) indistinguishable from "the model genuinely found no
+            # chains" — print so a silent zero-chains run is diagnosable from console output.
+            print(f"[chain_correlator] correlation call failed, findings will be uncorrelated: {e}", file=sys.stderr)
             return {"edges": [], "chains": []}
 
 

@@ -146,29 +146,18 @@ class AIPatternAgent:
             "</scanned_code>"
         )
         try:
-            response = self.client.messages.create(
-                model=MODEL,
-                # claude-sonnet-5 runs extended thinking by default even when `thinking` is never
-                # set, and thinking tokens are drawn from the same max_tokens budget as the JSON
-                # response — a file with several findings can burn most of max_tokens on invisible
-                # thinking before the visible JSON is written, truncating it mid-string. This task
-                # is pattern matching, not deep reasoning, so disable it outright.
-                thinking={"type": "disabled"},
-                # A file with many findings and verbose per-finding reasoning can need well over
-                # 2048 tokens; a cap that's too low truncates the JSON mid-string, which then
-                # fails to parse and silently drops every finding for the whole file.
-                max_tokens=8192,
-                system=SYSTEM_PROMPT,
-                messages=[{"role": "user", "content": user_content}],
-            )
-            text = next(b.text for b in response.content if b.type == "text")
-            raw_findings = _parse_response(text)
+            raw_findings = self._call_and_parse(user_content)
+        except (json.JSONDecodeError, ValueError):
+            # A malformed-JSON response is a non-deterministic LLM formatting slip (trailing
+            # comma, unescaped quote, etc.), not a structural failure — on a single-file target
+            # this would otherwise zero out every finding for the whole file, so retry once
+            # before giving up on it.
+            try:
+                raw_findings = self._call_and_parse(user_content)
+            except Exception as e:
+                return [_error_finding(rel_path, e)]
         except Exception as e:
-            return [{
-                "file": rel_path, "line": None, "pattern": None, "owasp_id": None,
-                "severity": None, "reasoning": f"ai-pattern agent error: {e}",
-                "tool": "ai-pattern-agent", "check_id": None, "message": f"ai-pattern agent error: {e}",
-            }]
+            return [_error_finding(rel_path, e)]
 
         results = []
         for item in raw_findings:
@@ -186,6 +175,33 @@ class AIPatternAgent:
             item["known_pattern"] = item["pattern"] in PATTERNS
             results.append(item)
         return results
+
+    def _call_and_parse(self, user_content: str) -> list[dict]:
+        response = self.client.messages.create(
+            model=MODEL,
+            # claude-sonnet-5 runs extended thinking by default even when `thinking` is never
+            # set, and thinking tokens are drawn from the same max_tokens budget as the JSON
+            # response — a file with several findings can burn most of max_tokens on invisible
+            # thinking before the visible JSON is written, truncating it mid-string. This task
+            # is pattern matching, not deep reasoning, so disable it outright.
+            thinking={"type": "disabled"},
+            # A file with many findings and verbose per-finding reasoning can need well over
+            # 2048 tokens; a cap that's too low truncates the JSON mid-string, which then
+            # fails to parse and silently drops every finding for the whole file.
+            max_tokens=8192,
+            system=SYSTEM_PROMPT,
+            messages=[{"role": "user", "content": user_content}],
+        )
+        text = next(b.text for b in response.content if b.type == "text")
+        return _parse_response(text)
+
+
+def _error_finding(rel_path: str, e: Exception) -> dict:
+    return {
+        "file": rel_path, "line": None, "pattern": None, "owasp_id": None,
+        "severity": None, "reasoning": f"ai-pattern agent error: {e}",
+        "tool": "ai-pattern-agent", "check_id": None, "message": f"ai-pattern agent error: {e}",
+    }
 
 
 def _walk_files(target_path: str) -> list[str]:

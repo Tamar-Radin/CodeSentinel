@@ -18,10 +18,15 @@ pip install -r requirements.txt        # direct deps, pinned to == (loose bound,
 pip install -r requirements.lock.txt   # full transitive lock — use for CI/reproducible installs
 
 python scan.py <path-to-target-repo> [--out findings.json]   # run the full pipeline
+python scan.py <path-to-target-repo> --verify-runtime [--out findings.json]  # + opt-in Layer 6
 streamlit run dashboard/app.py                                # view a findings.json in the UI
 
 pip install -r requirements-dev.txt    # test-only deps (pytest)
 pytest                                  # unit test suite (tests/) — no API key, no binaries needed
+
+pip install .                          # installs the `security-agent` console script (pyproject.toml)
+security-agent scan <path-to-target-repo> [--out findings.json]  # same pipeline, packaged form
+security-agent dashboard [findings.json]                          # Streamlit viewer, optionally preloaded
 ```
 
 `requirements.lock.txt` is a plain `pip freeze` of `requirements.txt`'s full dependency tree
@@ -30,6 +35,18 @@ pytest                                  # unit test suite (tests/) — no API ke
 and `pip freeze` drops that marker, so leaving it in would break installs on the `ubuntu-latest`
 CI runner. `requirements-dev.txt` (pytest) is separate and deliberately not folded into either
 file — it's not part of the shipped pipeline.
+
+`pyproject.toml` packages the repo for end users who want to scan *their own* target repo without
+cloning this one: `pip install .` exposes a `security-agent` console script (`cli.py`, entry point
+`security-agent = "cli:main"`) with `scan`/`dashboard` subcommands. This repo is private, so
+distribution is a locally-built wheel (`pip install build && python -m build --wheel`), shared
+directly rather than via a public git URL or PyPI — see the README's "Installing as a CLI"
+section. `build/` and `dist/` (the wheel-build output) are gitignored. `semgrep` and `pip-audit`
+are real pip dependencies there, so they install automatically; `npm audit`/`osv-scanner` stay
+best-effort (same fail-soft behavior as always — see `sca_runner.py`).
+This is a thin wrapper, not a fork: `cli.py`'s `scan` subcommand calls `scan.py`'s `run_scan()`
+directly, and `dashboard` shells out to `streamlit run dashboard/app.py`. `scan.py` itself (used
+directly by `ci/github-action.yml`) and the dev quick-start above are unchanged and still work.
 
 `tests/` holds the unit suite (run via `pytest`, wired into `ci/github-action.yml` as its own
 `unit-tests` job on every PR, forks included — it needs neither `ANTHROPIC_API_KEY` nor Semgrep/
@@ -46,7 +63,7 @@ that today, and still requires a real `ANTHROPIC_API_KEY` for its full-pipeline 
 implemented, and both `test_targets/ai-generated-crud-app/ground_truth.csv` and
 `test_targets/juice-shop/ground_truth.csv` exist, so eval can run against either target.
 
-## Architecture: the 5-layer pipeline
+## Architecture: the 5-layer pipeline (+ opt-in Layer 6)
 
 `core/orchestrator.py` (`Orchestrator.run()`) wires the layers together in order. Each layer
 consumes and returns the same `list[dict]` findings shape, progressively enriching it:
@@ -84,12 +101,50 @@ consumes and returns the same `list[dict]` findings shape, progressively enrichi
    .generate_all()` attaches a `proposed_patch` ({`patchable`, `diff`, `explanation`}) to up to
    `MAX_PATCHES_PER_RUN` findings that are both above `MIN_CONFIDENCE_FOR_PATCH` and match a
    pattern in `SUPPORTED_PATTERNS` (sql_injection, hardcoded_secret, missing_auth, xss,
-   permissive_cors). Implemented and wired into the orchestrator as the last step. **Never
-   auto-applied** — `diff` is text only, for human review + sandboxed verification before
+   permissive_cors). Implemented and wired into the orchestrator as the second-to-last step.
+   **Never auto-applied** — `diff` is text only, for human review + sandboxed verification before
    `git apply` (ASI05).
+6. **Layer 6 (opt-in, stretch) — Runtime Exploit Verification** (`verification/`): off by default;
+   enabled via `scan.py --verify-runtime` / `Orchestrator(verify_runtime=True)`, and never wired
+   into `ci/github-action.yml` or the default pipeline. Actually executes the scanned target's own
+   code — in an ephemeral temp-directory copy (`verification/sandbox.py`), never the user's actual
+   working tree — bound to `127.0.0.1` only, with the orchestrator's own secrets (e.g.
+   `ANTHROPIC_API_KEY`) stripped from the child process's environment before launch, plus hard
+   startup/total-runtime timeouts and process-group teardown on exit/exception/timeout.
+   **Process-level isolation only, not container/VM-level** (no seccomp, no network namespace, no
+   filesystem quota) — a known, explicitly-documented limit, not solved by this layer; see the
+   ASI05 (Layer 6) row in `security/agent_hardening_notes.md` for the full threat model.
+   `RuntimeVerifier.verify_all()` (`verification/runtime_verifier.py`) is additive-only: it never
+   modifies an existing finding field, only ever adds a `runtime_verification` key to findings
+   that clear its eligibility funnel (`verification/eligibility.py`) — pattern has a registered
+   recipe+oracle pair, per-occurrence eligible, and above `MIN_CONFIDENCE_FOR_VERIFICATION` (0.7;
+   policy gate only, so a finding with no confidence score at all is not gated out) — capped at
+   `MAX_VERIFICATIONS_PER_RUN` (20) per run; findings beyond that cap get
+   `status: "not_attempted", reason: "capacity_exceeded"` instead of being silently dropped.
+   `status` (`confirmed` / `not_confirmed` / `inconclusive` / `not_attempted`) is decided
+   exclusively by a deterministic oracle (`verification/oracles.py`) from `Evidence` a recipe
+   collected (`verification/recipes.py`) — the LLM narrative step (`verification/narrative.py`)
+   runs strictly afterward and cannot influence `status` (its output schema has no such key),
+   mirroring `patch_generator.py`'s never-`eval()`-model-output discipline (LLM05/ASI07). Target
+   identity is resolved by content fingerprint (multiple independent markers, e.g. a docstring +
+   a hardcoded credential + a required route set), never a path/directory-name substring check
+   (`verification/registry.py`); if zero or more than one registered adapter claims a target,
+   verification is refused entirely and every finding passes through byte-for-byte unchanged —
+   no partial/best-effort attempt. **Phase 1 status**: exactly one adapter is registered
+   (`FlaskCrudAdapter`, matching `test_targets/ai-generated-crud-app`) and exactly two patterns
+   have a recipe+oracle pair (`stubbed_auth_check`, `path_traversal`) — `config.V1_CORE_PATTERNS`
+   lists 8 patterns as the intended Phase-1 scope, but only these two are wired into
+   `recipes.RECIPE_REGISTRY`/`oracles.ORACLE_REGISTRY` so far. Results surface in `findings.json`
+   under each eligible finding's `runtime_verification` key, and in the dashboard under "Runtime
+   exploit verification" — see below.
 
 `dashboard/app.py` is a separate Streamlit viewer for a `findings.json` produced by `scan.py` —
-it does not call the pipeline itself. `ci/github-action.yml` runs `scan.py` on pull requests,
+it does not call the pipeline itself. When any finding carries a `runtime_verification` key (i.e.
+the scan was run with `--verify-runtime`), the dashboard renders a "Runtime exploit verification"
+section: a status-count summary (confirmed/not confirmed/inconclusive/not attempted) plus one
+expander per verified finding showing the LLM narrative, the oracle's reason, the adapter used,
+and the raw request/evidence JSON — omitted entirely when no finding has the key, same pattern as
+the Layer 5 proposed-patches section. `ci/github-action.yml` runs `scan.py` on pull requests,
 uploads `findings.json` as a workflow artifact, and posts/updates a single PR comment
 summarizing the findings (`ci/format_pr_comment.py` renders the Markdown; a hidden
 `<!-- security-agent-scan -->` marker lets the workflow find and edit its own previous comment
@@ -133,6 +188,11 @@ Concrete rules that follow from these and apply to any code touching the agent l
 - **Remediation patches are never auto-applied** — `PatchGenerator.generate()`/`generate_all()`
   must only return diff text for human review, never call `git apply` or otherwise write to the
   target repo (ASI05).
+- **Layer 6 runtime verification only executes inside `verification/sandbox.py`'s ephemeral
+  temp-directory copy**, never the user's actual working tree, and only when explicitly opted
+  into (`scan.py --verify-runtime`) — never wired into `ci/github-action.yml` or the default
+  pipeline. See the ASI05 (Layer 6) row in `agent_hardening_notes.md` for the full isolation model
+  and its explicitly-acknowledged limits (process-level isolation only, not container/VM-level).
 - Agents (`ConfidenceAgent`, `AIPatternAgent`) only get read access to source context passed in;
   Bash/subprocess invocation (Semgrep, pip-audit) stays in the orchestrator/detectors layer, not
   exposed to the LLM-facing agents (ASI02).
@@ -150,7 +210,14 @@ Concrete rules that follow from these and apply to any code touching the agent l
 
 ## Known gaps (see TODOs in code before assuming something works)
 
-- All 5 pipeline layers are implemented and wired into `Orchestrator.run()`.
+- All 5 core pipeline layers are implemented and wired into `Orchestrator.run()`; Layer 6 (Runtime
+  Exploit Verification) is also implemented and wired in, but opt-in and off by default.
+- Layer 6 is Phase 1 only: one target adapter (`FlaskCrudAdapter`) and two verifiable patterns
+  (`stubbed_auth_check`, `path_traversal`) out of the 8 `config.V1_CORE_PATTERNS` intended for
+  this phase — every other target/pattern combination is left untouched by design, not a bug.
+  Extending it means adding a recipe (`verification/recipes.py`) + oracle
+  (`verification/oracles.py`) pair per pattern, and an adapter (`verification/adapters/`) per
+  target shape.
 - `sca_runner.py` covers Python (`pip-audit`), JS/TS (`npm audit`), and now Go/Ruby/PHP/etc. via
   `osv-scanner` (results are filtered to skip the PyPI/npm ecosystems so findings aren't
   double-reported alongside pip-audit/npm-audit). The binary isn't installed on the
